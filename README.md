@@ -7,6 +7,7 @@
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 
 ## 核心功能
+![主界面](images/main_window.png)
 
 | 模块 | 功能 |
 |------|------|
@@ -86,16 +87,30 @@ ros2_dds_gui/
 
 这种设计使得代码更易于维护、测试和扩展。
 
-## 使用截图
+## 应用展示
 
-### 节点浏览器
+### 主界面
+![主界面](images/main_window.png)
+
+<!-- ### 节点浏览器
 查看和管理 ROS2 节点，支持实时刷新和详细信息展示。
+
+![节点浏览器](images/node_explorer.png) -->
 
 ### 话题监控
 订阅话题并实时查看消息内容，支持多种格式化显示。
 
+![话题监控](images/topic_monitor.png)
+
+### 服务调用
+发现系统中的服务并发送请求。
+
+![服务调用](images/service_caller.png)
+
 ### 拓扑视图
 直观展示 ROS2 系统的计算图结构。
+
+![拓扑视图](images/graph_view.png)
 
 ## 开发指南
 
