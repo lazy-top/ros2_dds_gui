@@ -1,16 +1,17 @@
-import subprocess
 import json
+from datetime import datetime
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, 
                              QTreeWidgetItem, QSplitter, QTextEdit, QHeaderView,
-                             QPushButton, QLabel, QLineEdit, QComboBox,QCheckBox)
+                             QPushButton, QLabel, QLineEdit, QComboBox,QCheckBox,QMessageBox)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont, QColor
 
 class NodeExplorer(QWidget):
     """节点浏览器 - 显示和管理ROS2节点"""
     
-    def __init__(self, dds_manager):
+    def __init__(self, node_manager, dds_manager):
         super().__init__()
+        self.node_manager = node_manager
         self.dds_manager = dds_manager
         self.nodes_info = {}
         self.init_ui()
@@ -23,21 +24,21 @@ class NodeExplorer(QWidget):
         # 工具栏
         toolbar = QHBoxLayout()
         
-        self.refresh_btn = QPushButton("刷新节点")
-        self.auto_refresh_check = QCheckBox("自动刷新 (2秒)")
-        self.auto_refresh_check.setChecked(True)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("过滤节点名称...")
         self.detail_combo = QComboBox()
         self.detail_combo.addItems(["基本信息", "详细输出", "JSON格式"])
+        self.auto_refresh_check = QCheckBox("自动刷新 (2秒)")
+        self.auto_refresh_check.setChecked(False)
+        self.refresh_btn = QPushButton("刷新节点")
         
-        toolbar.addWidget(self.refresh_btn)
-        toolbar.addWidget(self.auto_refresh_check)
         toolbar.addWidget(QLabel("过滤:"))
         toolbar.addWidget(self.filter_edit)
         toolbar.addWidget(QLabel("详情级别:"))
         toolbar.addWidget(self.detail_combo)
         toolbar.addStretch()
+        toolbar.addWidget(self.auto_refresh_check)
+        toolbar.addWidget(self.refresh_btn)
         
         # 主内容区域
         splitter = QSplitter(Qt.Horizontal)
@@ -94,7 +95,7 @@ class NodeExplorer(QWidget):
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self.refresh_nodes)
         self.auto_refresh_check.toggled.connect(self.toggle_auto_refresh)
-        self.toggle_auto_refresh(True)
+        self.toggle_auto_refresh(False)
     
     def toggle_auto_refresh(self, enabled):
         """切换自动刷新"""
@@ -106,12 +107,12 @@ class NodeExplorer(QWidget):
     def refresh_nodes(self):
         """刷新节点列表"""
         try:
-            # 获取节点列表
-            result = subprocess.run(['ros2', 'node', 'list'], 
-                                  capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                nodes = [node.strip() for node in result.stdout.split('\n') if node.strip()]
+            # 使用 node_manager 获取节点列表
+            nodes = self.node_manager.get_nodes()
+            if not nodes:
+                self.detail_text.setText("当前没有活动的ROS2节点")
+                return
+            if nodes:
                 self.update_node_tree(nodes)
                 self.get_detailed_node_info(nodes)
             else:
@@ -147,61 +148,15 @@ class NodeExplorer(QWidget):
         """获取节点的详细信息"""
         for node_name in nodes:
             try:
-                # 获取节点信息
-                result = subprocess.run(['ros2', 'node', 'info', node_name], 
-                                      capture_output=True, text=True)
-                
-                if result.returncode == 0:
-                    info = self.parse_node_info(result.stdout, node_name)
+                # 使用 node_manager 获取并解析节点信息
+                info = self.node_manager.get_parsed_node_info(node_name)
+                if info:
                     self.nodes_info[node_name] = info
                     
             except Exception as e:
                 print(f"获取节点 {node_name} 信息时出错: {e}")
     
-    def parse_node_info(self, info_text, node_name):
-        """解析节点信息文本"""
-        info = {
-            'name': node_name,
-            'type': '未知',
-            'status': '活跃',
-            'topics': [],
-            'services': [],
-            'actions': [],
-            'topic_count': 0,
-            'service_count': 0
-        }
-        
-        lines = info_text.split('\n')
-        current_section = ''
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            if line.startswith('Subscribers:'):
-                current_section = 'subscribers'
-            elif line.startswith('Publishers:'):
-                current_section = 'publishers'
-            elif line.startswith('Service Servers:'):
-                current_section = 'services'
-            elif line.startswith('Action Servers:'):
-                current_section = 'actions'
-            elif line.startswith('Action Clients:'):
-                current_section = 'action_clients'
-            elif current_section and line.startswith('/'):
-                # 这是一个话题/服务/动作
-                if current_section in ['subscribers', 'publishers']:
-                    info['topics'].append(line)
-                elif current_section == 'services':
-                    info['services'].append(line)
-                elif current_section in ['actions', 'action_clients']:
-                    info['actions'].append(line)
-        
-        info['topic_count'] = len(info['topics'])
-        info['service_count'] = len(info['services'])
-        
-        return info
+
     
     def on_node_selected(self):
         """节点选择变化事件"""
@@ -241,13 +196,33 @@ class NodeExplorer(QWidget):
         text = f"节点: {info.get('name', '未知')}\n"
         text += "=" * 50 + "\n\n"
         
-        text += "发布的话题:\n"
-        for topic in info.get('topics', [])[:10]:  # 只显示前10个
-            text += f"  {topic}\n"
+        # 显示发布者
+        publishers = info.get('publishers', [])
+        if publishers:
+            text += "发布者 (Publishers):\n"
+            for topic in publishers[:10]:  # 只显示前10个
+                text += f"  {topic}\n"
         
-        text += "\n服务:\n"
-        for service in info.get('services', [])[:10]:
-            text += f"  {service}\n"
+        # 显示订阅者
+        subscribers = info.get('subscribers', [])
+        if subscribers:
+            text += "\n订阅者 (Subscribers):\n"
+            for topic in subscribers[:10]:
+                text += f"  {topic}\n"
+        
+        # 显示服务
+        services = info.get('services', [])
+        if services:
+            text += "\n服务:\n"
+            for service in services[:10]:
+                text += f"  {service}\n"
+        
+        # 显示动作
+        actions = info.get('actions', [])
+        if actions:
+            text += "\n动作:\n"
+            for action in actions[:10]:
+                text += f"  {action}\n"
         
         return text
     
@@ -276,13 +251,19 @@ class NodeExplorer(QWidget):
         node_name = item.text(0)
         
         reply = QMessageBox.question(self, "确认终止", 
-                                    f"确定要终止节点 {node_name} 吗？")
+                                    f"确定要终止节点 {node_name} 吗？",
+                                    QMessageBox.Yes | QMessageBox.No)
         
         if reply == QMessageBox.Yes:
             try:
-                # 使用ros2 node kill命令终止节点
-                subprocess.run(['ros2', 'node', 'kill', node_name])
-                self.log_message(f"已发送终止信号给节点: {node_name}")
+                # 使用 node_manager 终止节点
+                success = self.node_manager.kill_node(node_name)
+                if success:
+                    self.log_message(f"已发送终止信号给节点: {node_name}")
+                    # 刷新节点列表
+                    QTimer.singleShot(1000, self.refresh_nodes)
+                else:
+                    QMessageBox.warning(self, "警告", "终止节点可能失败，请检查")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"终止节点失败: {e}")
     
@@ -302,5 +283,5 @@ class NodeExplorer(QWidget):
     
     def log_message(self, message):
         """记录日志消息"""
-        timestamp = QDateTime.currentDateTime().toString("hh:mm:ss")
+        timestamp = datetime.now().strftime("%H:%M:%S")
         self.detail_text.append(f"[{timestamp}] {message}")

@@ -1,8 +1,8 @@
 import os
-import subprocess
+from datetime import datetime
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
                              QLabel, QComboBox, QPushButton, QMessageBox, QTextEdit, QSpinBox, QListWidget)
-from PyQt5.QtCore import pyqtSignal, QThread, QTimer, QDateTime
+from PyQt5.QtCore import pyqtSignal, QThread, QTimer
 
 class DDSSelector(QWidget):
     """DDS实现选择器 - 支持动态切换底层DDS实现"""
@@ -10,19 +10,18 @@ class DDSSelector(QWidget):
     # 信号定义
     dds_config_changed = pyqtSignal(dict)  # 配置改变信号
     
-    # 支持的DDS实现
-    SUPPORTED_DDS_IMPLEMENTATIONS = {
-        'rmw_fastrtps_cpp': 'Fast DDS (默认)',
-        'rmw_cyclonedds_cpp': 'Cyclone DDS',
-        'rmw_connextdds': 'Connext DDS (需许可)'
-    }
-    
     def __init__(self, dds_manager):
         super().__init__()
         self.dds_manager = dds_manager
-        self.current_config = self.get_current_dds_config()
+        self.current_config = self.dds_manager.get_current_config()
         self.init_ui()
         self.setup_connections()
+        
+        # 停止 dds_manager 的自动发现定时器
+        self.dds_manager.stop_discovery()
+        
+        # 仅在初始化时获取一次服务列表
+        self.update_services_list()
         
     def init_ui(self):
         """初始化用户界面"""
@@ -49,7 +48,8 @@ class DDSSelector(QWidget):
         dds_layout = QHBoxLayout()
         dds_layout.addWidget(QLabel("选择DDS实现:"))
         self.dds_combo = QComboBox()
-        for rmw, name in self.SUPPORTED_DDS_IMPLEMENTATIONS.items():
+        # 使用 dds_manager 获取支持的实现
+        for rmw, name in self.dds_manager.get_supported_implementations().items():
             self.dds_combo.addItem(name, rmw)
         dds_layout.addWidget(self.dds_combo)
         
@@ -66,10 +66,12 @@ class DDSSelector(QWidget):
         self.apply_btn = QPushButton("应用配置")
         self.test_btn = QPushButton("测试连接")
         self.refresh_btn = QPushButton("刷新状态")
+        self.discover_btn = QPushButton("发现服务")  # 新增发现服务按钮
         
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.test_btn)
         button_layout.addWidget(self.refresh_btn)
+        button_layout.addWidget(self.discover_btn)
         
         switch_layout.addLayout(dds_layout)
         switch_layout.addLayout(domain_layout)
@@ -104,19 +106,19 @@ class DDSSelector(QWidget):
         self.apply_btn.clicked.connect(self.apply_dds_config)
         self.test_btn.clicked.connect(self.test_dds_connection)
         self.refresh_btn.clicked.connect(self.refresh_dds_status)
+        self.discover_btn.clicked.connect(self.discover_services)  # 连接发现服务按钮
         
-    def get_current_dds_config(self):
-        """获取当前DDS配置"""
-        return {
-            'rmw_implementation': os.environ.get('RMW_IMPLEMENTATION', '未设置'),
-            'domain_id': os.environ.get('ROS_DOMAIN_ID', '0'),
-            'status': '未知'
-        }
+        # 连接 dds_manager 的信号
+        self.dds_manager.config_changed.connect(self.on_config_changed)
+        self.dds_manager.services_updated.connect(self.on_services_updated)
+        
+
     
     def update_current_display(self):
         """更新当前配置显示"""
-        config = self.get_current_dds_config()
-        dds_name = self.SUPPORTED_DDS_IMPLEMENTATIONS.get(
+        config = self.dds_manager.get_current_config()
+        implementations = self.dds_manager.get_supported_implementations()
+        dds_name = implementations.get(
             config['rmw_implementation'], config['rmw_implementation']
         )
         
@@ -130,85 +132,48 @@ class DDSSelector(QWidget):
         new_domain = str(self.domain_spin.value())
         
         try:
-            # 验证域ID范围
-            domain_int = int(new_domain)
-            if not 0 <= domain_int <= 232:
-                raise ValueError("域ID必须在0-232之间")
+            # 使用 dds_manager 切换配置
+            success = self.dds_manager.switch_dds_config(new_domain, new_rmw)
             
-            # 检查DDS实现是否可用
-            if not self.check_dds_availability(new_rmw):
-                raise ValueError(f"DDS实现 {new_rmw} 不可用")
-            
-            # 设置环境变量
-            os.environ['RMW_IMPLEMENTATION'] = new_rmw
-            os.environ['ROS_DOMAIN_ID'] = new_domain
-            
-            self.log_message(f"✅ DDS配置已应用: {new_rmw}, 域ID: {new_domain}")
-            self.log_message("⚠️ 注意: 需要重启相关节点才能使配置完全生效")
-            
-            # 发射配置改变信号
-            self.dds_config_changed.emit({
-                'rmw_implementation': new_rmw,
-                'domain_id': new_domain,
-                'timestamp': '刚刚'
-            })
-            
-            self.update_current_display()
-            
+            if success:
+                self.log_message(f"✅ DDS配置已应用: {new_rmw}, 域ID: {new_domain}")
+                self.log_message("⚠️ 注意: 需要重启相关节点才能使配置完全生效")
+                
+                # 发射配置改变信号
+                self.dds_config_changed.emit({
+                    'rmw_implementation': new_rmw,
+                    'domain_id': new_domain,
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                
+                self.update_current_display()
+            else:
+                self.log_message("❌ 配置应用失败")
+                QMessageBox.warning(self, "配置错误", "应用DDS配置时发生错误")
+                
         except Exception as e:
             self.log_message(f"❌ 配置应用失败: {str(e)}")
             QMessageBox.warning(self, "配置错误", f"应用DDS配置时发生错误:\n{str(e)}")
     
-    def check_dds_availability(self, rmw_implementation):
-        """检查DDS实现是否可用"""
-        try:
-            # 临时设置环境变量并测试ROS2命令
-            env = os.environ.copy()
-            env['RMW_IMPLEMENTATION'] = rmw_implementation
-            env['ROS_DOMAIN_ID'] = '0'  # 使用默认域进行测试
-            
-            result = subprocess.run([
-                'ros2', 'node', 'list'
-            ], env=env, capture_output=True, text=True, timeout=5.0)
-            
-            return result.returncode == 0 or "RMW implementation not found" not in result.stderr
-            
-        except subprocess.TimeoutExpired:
-            self.log_message(f"⚠️ DDS实现 {rmw_implementation} 检查超时")
-            return True  # 超时不一定表示不可用
-        except Exception as e:
-            self.log_message(f"⚠️ DDS实现检查异常: {e}")
-            return False
+
     
     def test_dds_connection(self):
         """测试DDS连接"""
         self.log_message("🔍 开始DDS连接测试...")
         
         try:
-            # 测试节点发现
-            result = subprocess.run([
-                'ros2', 'node', 'list'
-            ], capture_output=True, text=True, timeout=5.0)
+            # 使用 dds_manager 测试连接
+            result = self.dds_manager.test_dds_connection()
             
-            if result.returncode == 0:
-                nodes = [node for node in result.stdout.split('\n') if node.strip()]
-                self.log_message(f"✅ 节点发现测试通过，发现 {len(nodes)} 个节点")
-                
-                # 测试话题列表
-                topic_result = subprocess.run([
-                    'ros2', 'topic', 'list'
-                ], capture_output=True, text=True, timeout=5.0)
-                
-                if topic_result.returncode == 0:
-                    topics = [topic for topic in topic_result.stdout.split('\n') if topic.strip()]
-                    self.log_message(f"✅ 话题发现测试通过，发现 {len(topics)} 个话题")
-                    self.log_message("🎉 DDS连接测试全部通过")
-                else:
-                    self.log_message("⚠️ 话题发现测试失败，但节点发现正常")
-                    
+            if result['success']:
+                self.log_message(f"✅ 节点发现测试通过，发现 {result['node_count']} 个节点")
+                self.log_message(f"✅ 话题发现测试通过，发现 {result['topic_count']} 个话题")
+                self.log_message("🎉 DDS连接测试全部通过")
             else:
-                self.log_message("❌ 节点发现测试失败，请检查DDS配置")
-                
+                self.log_message("❌ 连接测试失败")
+                for msg in result['messages']:
+                    self.log_message(f"  {msg}")
+                    
         except Exception as e:
             self.log_message(f"❌ 连接测试异常: {e}")
     
@@ -218,29 +183,69 @@ class DDSSelector(QWidget):
         self.update_current_display()
         
         # 检查当前DDS实现的可用性
-        current_rmw = os.environ.get('RMW_IMPLEMENTATION', '')
-        if current_rmw:
-            is_available = self.check_dds_availability(current_rmw)
+        current_config = self.dds_manager.get_current_config()
+        current_rmw = current_config['rmw_implementation']
+        
+        if current_rmw and current_rmw != '未设置':
+            is_available = self.dds_manager.check_dds_availability(current_rmw)
             status = "可用" if is_available else "不可用"
             self.log_message(f"DDS实现 {current_rmw} 状态: {status}")
         
-        # 更新服务列表
-        self.update_services_list()
+        # 仅刷新本地配置，不重新发现服务
+        self.update_local_config_display()
+    
+    def discover_services(self):
+        """手动发现DDS服务"""
+        self.log_message("🔍 开始发现DDS服务...")
+        
+        try:
+            # 手动触发服务发现
+            self.dds_manager.refresh_services()
+            # 更新服务列表显示
+            self.update_services_list()
+            self.log_message("✅ 服务发现完成")
+        except Exception as e:
+            self.log_message(f"❌ 服务发现失败: {e}")
+    
+    def update_local_config_display(self):
+        """仅更新本地配置显示（不重新发现服务）"""
+        # 只更新服务列表中的本地配置项
+        if self.services_list.count() > 0:
+            local_config = self.dds_manager.get_local_dds_config()
+            local_text = f"本地 - {local_config.hostname} - {local_config.dds_implementation} ({len(local_config.nodes)}节点, {len(local_config.topics)}话题)"
+            self.services_list.item(0).setText(local_text)
     
     def update_services_list(self):
         """更新DDS服务列表"""
         self.services_list.clear()
+        
+        # 获取本地配置
+        local_config = self.dds_manager.get_local_dds_config()
+        local_text = f"本地 - {local_config.hostname} - {local_config.dds_implementation} ({len(local_config.nodes)}节点, {len(local_config.topics)}话题)"
+        self.services_list.addItem(local_text)
+        
+        # 获取发现的远程服务
         services = self.dds_manager.get_discovered_services()
         for service in services:
             item_text = f"远程 - {service.hostname} - {service.dds_implementation} ({len(service.nodes)}节点, {len(service.topics)}话题)"
             self.services_list.addItem(item_text)
         
-        # 可以扩展显示发现的远程DDS服务
-        # 这里预留接口供后续实现DDS服务发现功能
+        if not services:
+            self.services_list.addItem("暂无发现远程服务")
+    
+    def on_config_changed(self, config):
+        """处理配置改变事件"""
+        self.update_current_display()
+        self.log_message(f"🔔 配置已更新: {config['rmw_implementation']}, 域ID: {config['domain_id']}")
+    
+    def on_services_updated(self, services):
+        """处理服务列表更新事件"""
+        self.update_services_list()
+        self.log_message(f"🔄 发现 {len(services)} 个远程服务")
     
     def log_message(self, message):
         """添加日志消息"""
-        timestamp = QDateTime.currentDateTime().toString("hh:mm:ss")
+        timestamp = datetime.now().strftime("%H:%M:%S")
         self.status_text.append(f"[{timestamp}] {message}")
         # 自动滚动到底部
         scrollbar = self.status_text.verticalScrollBar()

@@ -1,4 +1,3 @@
-import subprocess
 import json
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                              QTextEdit, QSplitter, QGroupBox, QPushButton,
@@ -10,8 +9,9 @@ import yaml
 class ServiceCaller(QWidget):
     """服务调用器 - 发现和调用ROS2服务"""
     
-    def __init__(self, dds_manager):
+    def __init__(self, service_manager, dds_manager):
         super().__init__()
+        self.service_manager = service_manager
         self.dds_manager = dds_manager
         self.services_info = {}
         self.init_ui()
@@ -24,17 +24,17 @@ class ServiceCaller(QWidget):
         # 工具栏
         toolbar = QHBoxLayout()
         
-        self.refresh_btn = QPushButton("刷新服务列表")
-        self.auto_refresh_check = QCheckBox("自动刷新")
-        self.auto_refresh_check.setChecked(True)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("过滤服务名称...")
+        self.auto_refresh_check = QCheckBox("自动刷新")
+        self.auto_refresh_check.setChecked(False)
+        self.refresh_btn = QPushButton("刷新服务列表")
         
-        toolbar.addWidget(self.refresh_btn)
-        toolbar.addWidget(self.auto_refresh_check)
         toolbar.addWidget(QLabel("过滤:"))
         toolbar.addWidget(self.filter_edit)
         toolbar.addStretch()
+        toolbar.addWidget(self.auto_refresh_check)
+        toolbar.addWidget(self.refresh_btn)
         
         # 主内容区域
         splitter = QSplitter(Qt.Horizontal)
@@ -127,7 +127,7 @@ class ServiceCaller(QWidget):
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self.refresh_services)
         self.auto_refresh_check.toggled.connect(self.toggle_auto_refresh)
-        self.toggle_auto_refresh(True)
+        self.toggle_auto_refresh(False)
     
     def toggle_auto_refresh(self, enabled):
         """切换自动刷新"""
@@ -139,11 +139,10 @@ class ServiceCaller(QWidget):
     def refresh_services(self):
         """刷新服务列表"""
         try:
-            result = subprocess.run(['ros2', 'service', 'list'], 
-                                  capture_output=True, text=True)
+            # 使用 service_manager 获取服务列表
+            services = self.service_manager.get_services()
             
-            if result.returncode == 0:
-                services = [s.strip() for s in result.stdout.split('\n') if s.strip()]
+            if services:
                 self.update_service_list(services)
                 self.get_services_info(services)
             else:
@@ -165,15 +164,10 @@ class ServiceCaller(QWidget):
         """获取服务详细信息"""
         for service in services:
             try:
-                result = subprocess.run(['ros2', 'service', 'type', service], 
-                                      capture_output=True, text=True)
-                
-                if result.returncode == 0:
-                    service_type = result.stdout.strip()
-                    self.services_info[service] = {
-                        'type': service_type,
-                        'name': service
-                    }
+                # 使用 service_manager 获取服务信息
+                info = self.service_manager.get_service_info(service)
+                if info:
+                    self.services_info[service] = info
                     
             except Exception as e:
                 print(f"获取服务 {service} 信息失败: {e}")
@@ -189,26 +183,8 @@ class ServiceCaller(QWidget):
     
     def show_service_info(self, service_name):
         """显示服务详细信息"""
-        info = self.services_info.get(service_name, {})
-        
-        info_text = f"服务名称: {service_name}\n"
-        info_text += "=" * 50 + "\n"
-        info_text += f"服务类型: {info.get('type', '未知')}\n\n"
-        
-        # 显示服务接口信息
-        if 'type' in info:
-            try:
-                # 尝试获取服务定义
-                result = subprocess.run(['ros2', 'interface', 'show', info['type']], 
-                                      capture_output=True, text=True)
-                
-                if result.returncode == 0:
-                    info_text += "服务定义:\n"
-                    info_text += result.stdout
-                    
-            except Exception as e:
-                info_text += f"获取服务定义失败: {e}\n"
-        
+        # 使用 service_manager 格式化服务信息
+        info_text = self.service_manager.format_service_info(service_name, 'text')
         self.service_info_text.setText(info_text)
     
     def call_service(self):
@@ -233,51 +209,37 @@ class ServiceCaller(QWidget):
             else:  # JSON
                 request_data = json.loads(request_text)
             
-            # 调用服务
-            self.call_ros2_service(service_name, request_data)
+            # 使用 service_manager 调用服务
+            result = self.service_manager.call_service(
+                service_name, 
+                request_data, 
+                format_type.lower()
+            )
             
+            # 显示结果
+            if result['success']:
+                response_text = "服务调用成功:\n"
+                response_text += "=" * 50 + "\n"
+                response_text += result['stdout']
+                self.response_text.setText(response_text)
+            else:
+                error_text = "服务调用失败:\n"
+                error_text += "=" * 50 + "\n"
+                error_text += f"错误: {result['error']}\n\n"
+                if result['stderr']:
+                    error_text += f"Stderr:\n{result['stderr']}\n"
+                if result['stdout']:
+                    error_text += f"Stdout:\n{result['stdout']}"
+                self.response_text.setText(error_text)
+            
+        except yaml.YAMLError as e:
+            QMessageBox.critical(self, "错误", f"YAML格式错误: {e}")
+        except json.JSONDecodeError as e:
+            QMessageBox.critical(self, "错误", f"JSON格式错误: {e}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"调用服务失败: {e}")
     
-    def call_ros2_service(self, service_name, request_data):
-        """调用ROS2服务"""
-        try:
-            # 获取服务类型
-            service_type = self.services_info.get(service_name, {}).get('type', '')
-            if not service_type:
-                raise ValueError("无法获取服务类型")
-            
-            # 构建请求文件
-            import tempfile
-            import os
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-                yaml.dump(request_data, f)
-                temp_file = f.name
-            
-            try:
-                # 调用ros2 service call命令
-                result = subprocess.run([
-                    'ros2', 'service', 'call',
-                    service_name,
-                    service_type,
-                    request_data  # 直接传递请求数据
-                ], capture_output=True, text=True, timeout=10.0)
-                
-                if result.returncode == 0:
-                    self.response_text.setText(f"服务调用成功:\n{result.stdout}")
-                else:
-                    self.response_text.setText(f"服务调用失败:\n{result.stderr}")
-                    
-            finally:
-                # 清理临时文件
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
-                
-        except subprocess.TimeoutExpired:
-            self.response_text.setText("服务调用超时")
-        except Exception as e:
-            self.response_text.setText(f"服务调用异常: {e}")
+
     
     def clear_results(self):
         """清空结果"""

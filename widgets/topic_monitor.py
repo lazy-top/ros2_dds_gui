@@ -1,5 +1,6 @@
 import yaml
 import json
+import subprocess
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, 
                              QListWidgetItem, QTextEdit, QSplitter, QGroupBox,
                              QPushButton, QLineEdit, QComboBox, QCheckBox, QLabel,QMessageBox)
@@ -10,14 +11,16 @@ from PyQt5.QtGui import QFont, QColor, QTextCursor
 from std_msgs.msg import String
 import threading
 
+from managers.topic_manager import TopicManager
 class TopicMonitor(QWidget):
     """话题监控器 - 实时监控ROS2话题消息"""
     
     message_received = pyqtSignal(dict)  # 消息接收信号
     
-    def __init__(self, dds2_manager):
+    def __init__(self, topic_manager,dds2_manager):
         super().__init__()
         self.dds2_manager = dds2_manager
+        self.topic_manager = topic_manager
         self.subscriptions = {}  # 活跃的订阅
         self.message_history = {}  # 消息历史
         self.max_history = 100  # 最大历史消息数
@@ -35,21 +38,22 @@ class TopicMonitor(QWidget):
         self.topic_combo.setEditable(True)
         self.topic_combo.setPlaceholderText("选择或输入话题名称...")
         
-        self.refresh_topics_btn = QPushButton("刷新话题列表")
         self.subscribe_btn = QPushButton("订阅话题")
         self.unsubscribe_btn = QPushButton("取消订阅")
         self.clear_btn = QPushButton("清空消息")
         
         self.auto_refresh_check = QCheckBox("自动刷新话题列表")
-        self.auto_refresh_check.setChecked(True)
+        self.auto_refresh_check.setChecked(False)
+        self.refresh_topics_btn = QPushButton("刷新话题列表")
         
         control_layout.addWidget(QLabel("话题:"))
         control_layout.addWidget(self.topic_combo, 1)
-        control_layout.addWidget(self.refresh_topics_btn)
         control_layout.addWidget(self.subscribe_btn)
         control_layout.addWidget(self.unsubscribe_btn)
         control_layout.addWidget(self.clear_btn)
+        control_layout.addStretch()
         control_layout.addWidget(self.auto_refresh_check)
+        control_layout.addWidget(self.refresh_topics_btn)
         
         # 主内容区域
         splitter = QSplitter(Qt.Vertical)
@@ -74,7 +78,7 @@ class TopicMonitor(QWidget):
         
         self.topic_info_text = QTextEdit()
         self.topic_info_text.setReadOnly(True)
-        self.topic_info_text.setMaximumHeight(150)
+        # self.topic_info_text.setMaximumHeight(150)
         
         topic_info_layout.addWidget(self.topic_info_text)
         topic_info_group.setLayout(topic_info_layout)
@@ -134,7 +138,7 @@ class TopicMonitor(QWidget):
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self.refresh_topics)
         self.auto_refresh_check.toggled.connect(self.toggle_auto_refresh)
-        self.toggle_auto_refresh(True)
+        self.toggle_auto_refresh(False)
     
     def toggle_auto_refresh(self, enabled):
         """切换自动刷新"""
@@ -146,13 +150,9 @@ class TopicMonitor(QWidget):
     def refresh_topics(self):
         """刷新话题列表"""
         try:
-            result = subprocess.run(['ros2', 'topic', 'list'], 
-                                  capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                topics = [topic.strip() for topic in result.stdout.split('\n') if topic.strip()]
-                self.update_topic_combo(topics)
-                self.update_topic_list(topics)
+            topics = self.topic_manager.get_topics()
+            self.update_topic_combo(topics)
+            self.update_topic_list(topics)
                 
         except Exception as e:
             self.show_error(f"刷新话题列表失败: {e}")
@@ -197,18 +197,15 @@ class TopicMonitor(QWidget):
     def show_topic_info(self, topic_name):
         """显示话题详细信息"""
         try:
-            # 获取话题类型
-            type_result = subprocess.run(['ros2', 'topic', 'info', topic_name], 
-                                       capture_output=True, text=True)
-            
-            # 获取话题详情
-            detail_result = subprocess.run(['ros2', 'topic', 'info', topic_name, '--verbose'], 
-                                        capture_output=True, text=True)
+            # 使用 topic_manager 获取话题信息
+            info_basic = self.topic_manager.get_topic_info(topic_name)
+            info_verbose = self.topic_manager.get_topic_info(topic_name, verbose=True)
             
             info_text = f"话题: {topic_name}\n"
             info_text += "=" * 50 + "\n"
-            info_text += type_result.stdout + "\n" if type_result.returncode == 0 else "无法获取话题信息\n"
-            info_text += detail_result.stdout if detail_result.returncode == 0 else ""
+            info_text += info_basic + "\n" if info_basic else "无法获取话题基本信息\n"
+            info_text += "\n详细信息:\n"
+            info_text += info_verbose if info_verbose else "无法获取话题详细信息"
             
             self.topic_info_text.setText(info_text)
             
@@ -227,25 +224,31 @@ class TopicMonitor(QWidget):
             return
         
         try:
-            # 获取话题类型
-            type_result = subprocess.run(['ros2', 'topic', 'type', topic_name], 
-                                       capture_output=True, text=True)
+            # 使用 topic_manager 获取话题类型
+            msg_type = self.topic_manager.get_topic_type(topic_name)
             
-            if type_result.returncode != 0:
+            if not msg_type:
                 QMessageBox.warning(self, "错误", f"无法获取话题 {topic_name} 的类型")
                 return
             
-            msg_type = type_result.stdout.strip()
+            # 创建订阅 - 使用 topic_manager
+            subscription = self.topic_manager.create_subscription(
+                topic_name=topic_name,
+                message_type=msg_type,
+                callback=self.on_topic_message_received,
+                qos_depth=10
+            )
             
-            # 创建订阅
-            subscription = TopicSubscription(topic_name, msg_type, self)
-            self.subscriptions[topic_name] = subscription
-            
-            # 初始化消息历史
-            self.message_history[topic_name] = []
-            
-            self.update_topic_list_display()
-            self.message_text.append(f"[{self.get_timestamp()}] 已订阅话题: {topic_name} ({msg_type})")
+            if subscription:
+                self.subscriptions[topic_name] = subscription
+                
+                # 初始化消息历史
+                self.message_history[topic_name] = []
+                
+                self.update_topic_list_display()
+                self.message_text.append(f"[{self.get_timestamp()}] 已订阅话题: {topic_name} ({msg_type})")
+            else:
+                QMessageBox.warning(self, "错误", f"创建订阅失败")
             
         except Exception as e:
             QMessageBox.critical(self, "错误", f"订阅话题失败: {e}")
@@ -258,17 +261,26 @@ class TopicMonitor(QWidget):
             return
         
         try:
-            subscription = self.subscriptions.pop(topic_name)
-            subscription.destroy()
+            # 使用 topic_manager 销毁订阅
+            success = self.topic_manager.destroy_subscription(topic_name)
             
-            self.update_topic_list_display()
-            self.message_text.append(f"[{self.get_timestamp()}] 已取消订阅话题: {topic_name}")
+            if success:
+                self.subscriptions.pop(topic_name, None)
+                self.update_topic_list_display()
+                self.message_text.append(f"[{self.get_timestamp()}] 已取消订阅话题: {topic_name}")
+            else:
+                QMessageBox.warning(self, "警告", "取消订阅失败")
             
         except Exception as e:
             QMessageBox.critical(self, "错误", f"取消订阅失败: {e}")
     
+    def on_topic_message_received(self, message_data):
+        """话题消息接收回调（从 topic_manager 调用）"""
+        # 通过信号发送到主线程处理
+        self.message_received.emit(message_data)
+    
     def on_message_received(self, message_data):
-        """处理接收到的消息"""
+        """处理接收到的消息（在主线程中）"""
         if self.pause_display_check.isChecked():
             return
             
@@ -329,116 +341,3 @@ class TopicMonitor(QWidget):
     def show_error(self, message):
         """显示错误信息"""
         self.message_text.append(f"[ERROR] {message}")
-
-class TopicSubscription:
-    """话题订阅封装类"""
-    
-    def __init__(self, topic_name, message_type, parent_monitor):
-        self.topic_name = topic_name
-        self.message_type = message_type
-        self.parent = parent_monitor
-        self.node = None
-        self.subscription = None
-        
-        self.setup_subscription()
-    
-    def setup_subscription(self):
-        """设置订阅"""
-        try:
-            # 创建临时节点进行订阅
-            self.node = rclpy.create_node(f'monitor_{hash(self.topic_name)}')
-            
-            # 动态导入消息类型
-            msg_module = self.import_message_type(self.message_type)
-            if not msg_module:
-                raise ImportError(f"无法导入消息类型: {self.message_type}")
-            
-            # 创建订阅
-            self.subscription = self.node.create_subscription(
-                msg_module,
-                self.topic_name,
-                self.message_callback,
-                10  # QoS队列深度
-            )
-            
-            # 在单独线程中旋转节点
-            self.thread = threading.Thread(target=self.spin_node, daemon=True)
-            self.thread.start()
-            
-        except Exception as e:
-            print(f"创建订阅失败: {e}")
-    
-    def import_message_type(self, message_type):
-        """动态导入消息类型"""
-        try:
-            parts = message_type.split('/')
-            if len(parts) != 2:
-                return None
-                
-            package_name = parts[0]
-            message_name = parts[1]
-            
-            # 常见消息类型的映射
-            common_messages = {
-                'std_msgs/msg/String': 'std_msgs.msg.String',
-                'std_msgs/msg/Int32': 'std_msgs.msg.Int32',
-                'geometry_msgs/msg/Twist': 'geometry_msgs.msg.Twist',
-                'sensor_msgs/msg/Image': 'sensor_msgs.msg.Image'
-            }
-            
-            if message_type in common_messages:
-                import importlib
-                module_path = common_messages[message_type].rsplit('.', 1)[0]
-                class_name = common_messages[message_type].rsplit('.', 1)[1]
-                
-                module = importlib.import_module(module_path)
-                return getattr(module, class_name)
-            
-        except Exception as e:
-            print(f"导入消息类型失败: {e}")
-        
-        return None
-    
-    def message_callback(self, msg):
-        """消息回调函数"""
-        try:
-            # 将消息转换为字典
-            message_dict = self.message_to_dict(msg)
-            
-            # 发射信号到主线程
-            self.parent.message_received.emit({
-                'topic': self.topic_name,
-                'message': message_dict,
-                'timestamp': self.parent.get_timestamp()
-            })
-            
-        except Exception as e:
-            print(f"处理消息时出错: {e}")
-    
-    def message_to_dict(self, msg):
-        """将消息对象转换为字典"""
-        if hasattr(msg, '__dict__'):
-            return msg.__dict__
-        else:
-            # 对于ROS2消息，使用getattr获取所有字段
-            result = {}
-            for field in dir(msg):
-                if not field.startswith('_'):
-                    value = getattr(msg, field)
-                    if not callable(value):
-                        result[field] = value
-            return result
-    
-    def spin_node(self):
-        """旋转节点以接收消息"""
-        try:
-            while rclpy.ok() and self.subscription is not None:
-                rclpy.spin_once(self.node, timeout_sec=0.1)
-        except:
-            pass
-    
-    def destroy(self):
-        """销毁订阅"""
-        if self.node:
-            self.node.destroy_node()
-            self.subscription = None
