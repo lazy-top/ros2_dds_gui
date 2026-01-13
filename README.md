@@ -1,48 +1,20 @@
 # ROS2 DDS GUI
 
-一个基于 PyQt5 的 ROS2 DDS 图形化管理工具，提供直观的界面来监控和管理 ROS2 系统中的节点、话题、服务和计算图。
+**轻量级 ROS2 图形化调试工具** - 一站式监控节点、话题、服务和计算图。
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![ROS2](https://img.shields.io/badge/ROS2-Humble-green.svg)
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)
 
-## 功能特性
+## 核心功能
 
-### 节点浏览器 (Node Explorer)
-- 实时显示所有活跃的 ROS2 节点
-- 查看节点详细信息（发布者、订阅者、服务、动作）
-- 支持节点过滤和搜索
-- 终止指定节点
-
-### 话题监控 (Topic Monitor)
-- 列出所有可用话题及其类型
-- 实时订阅和显示话题消息
-- 支持多种消息格式显示（原始、JSON、YAML）
-- 消息历史记录和自动滚动
-
-### 服务调用 (Service Caller)
-- 发现系统中所有可用服务
-- 查看服务类型和接口定义
-- 支持 YAML/JSON 格式的请求参数
-- 直观显示服务调用结果
-
-### 拓扑视图 (Graph View)
-- 可视化 ROS2 计算图拓扑结构
-- 多种布局算法（自动、分层、环形、力导向）
-- 节点和话题的连接关系展示
-- 支持导出为 DOT、JSON 或图片格式
-
-### DDS 配置 (DDS Selector)
-- DDS 中间件状态监控
-- 域 ID 配置管理
-- RMW 实现切换
-- 服务发现和状态检测
-
-### 状态面板 (Status Panel)
-- 实时显示 DDS 服务运行状态
-- ROS2 版本和发行版信息
-- 当前域 ID 和节点/话题统计
+| 模块 | 功能 |
+|------|------|
+| **节点浏览器** | 查看、过滤、终止 ROS2 节点 |
+| **话题监控** | 实时订阅话题，支持 JSON/YAML 格式显示 |
+| **服务调用** | 发现服务并发送请求 |
+| **拓扑视图** | 可视化计算图，多种布局算法 |
+| **DDS 配置** | 域 ID 管理，RMW 切换 |
 
 ## 系统要求
 
